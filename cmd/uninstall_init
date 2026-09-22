@@ -1,0 +1,20 @@
+#!/bin/bash
+
+### 卸载前：停止应用进程
+set -e
+
+# 停止主进程
+if [ -f "$TRIM_PKGVAR/shuatixia.pid" ]; then
+  PID=$(cat "$TRIM_PKGVAR/shuatixia.pid" 2>/dev/null || true)
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill "$PID" 2>/dev/null || true
+    sleep 1
+    kill -9 "$PID" 2>/dev/null || true
+  fi
+  rm -f "$TRIM_PKGVAR/shuatixia.pid"
+fi
+
+# 清理 socket
+rm -f "$TRIM_APPDEST/app.sock" 2>/dev/null || true
+
+exit 0

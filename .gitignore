@@ -1,0 +1,45 @@
+# ===== 依赖 =====
+node_modules/
+
+# ===== 前端构建产物 =====
+frontend/dist/
+app/www/
+frontend/build.log
+
+# ===== 运行时数据（本地调试）=====
+.devdb/
+.devdb2/
+.devdb-server.log
+.devdb-server.err
+.devdb2-server.log
+.devdb2-server.err
+.devshots/
+.devfixtures/
+
+# ===== 旧实现备份（保留不删，不入库）=====
+app/server_v1/
+app/ui_legacy/
+app/server/node_modules_v1/
+
+# ===== 打包产物 =====
+*.fpk
+
+# ===== 日志 =====
+*.log
+npm-debug.log*
+
+# ===== 系统/编辑器 =====
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# ===== 临时文件 =====
+*.tmp
+*~
+
+# ===== 源码地图 =====
+*.map
+
+# ===== 编辑器 =====
+.vscode/

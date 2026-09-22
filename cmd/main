@@ -1,0 +1,117 @@
+#!/bin/bash
+set -u
+
+# AI刷题侠 - 统一网关模式生命周期脚本
+# 依赖运行时：nodejs_v22（manifest 中 install_dep_apps 声明）
+
+APP_DEST="${TRIM_APPDEST}"
+SERVER_DIR="${APP_DEST}/server"
+PID_FILE="${TRIM_PKGVAR}/shuatixia.pid"
+LOG_FILE="${TRIM_PKGVAR}/shuatixia.log"
+SOCKET_FILE="${APP_DEST}/app.sock"
+
+# 将 nodejs 运行时加入 PATH（多路径探测，兼容不同依赖命名/安装位置）
+NODE_BIN_DIR=""
+for cand in \
+  "/var/apps/nodejs_v22/target/bin" \
+  "/var/apps/nodejs/target/bin" \
+  "/var/apps/nodejs_v20/target/bin"; do
+  if [ -x "${cand}/node" ]; then
+    NODE_BIN_DIR="${cand}"
+    break
+  fi
+done
+if [ -z "${NODE_BIN_DIR}" ] && command -v node >/dev/null 2>&1; then
+  NODE_BIN_DIR="$(dirname "$(command -v node)")"
+fi
+if [ -n "${NODE_BIN_DIR}" ]; then
+  export PATH="${NODE_BIN_DIR}:${PATH}"
+fi
+
+is_running() {
+  [ -f "$PID_FILE" ] || return 1
+  pid="$(cat "$PID_FILE" 2>/dev/null)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+start_app() {
+  if is_running; then
+    return 0
+  fi
+
+  if ! command -v node >/dev/null 2>&1; then
+    {
+      echo "Node.js 运行时不可用。已尝试以下路径："
+      echo " - /var/apps/nodejs_v22/target/bin"
+      echo " - /var/apps/nodejs/target/bin"
+      echo " - /var/apps/nodejs_v20/target/bin"
+      echo " - PATH 中查找"
+      echo ""
+      echo "--- /var/apps/ 实际内容 ---"
+      ls -la /var/apps/ 2>/dev/null || echo "(无法读取 /var/apps/)"
+    } > "${TRIM_TEMP_LOGFILE}"
+    return 1
+  fi
+
+  if [ ! -f "${SERVER_DIR}/server.js" ]; then
+    echo "后端入口缺失：${SERVER_DIR}/server.js" > "${TRIM_TEMP_LOGFILE}"
+    return 1
+  fi
+
+  mkdir -p "${TRIM_PKGVAR}"
+  rm -f "$PID_FILE"
+
+  # 统一网关模式：监听 Unix Socket（TRIM_APPDEST/app.sock），由 fnOS 网关转发并注入登录用户身份
+  nohup node "${SERVER_DIR}/server.js" >>"$LOG_FILE" 2>&1 &
+  pid=$!
+  echo "$pid" > "$PID_FILE"
+
+  sleep 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$PID_FILE" "$SOCKET_FILE"
+    echo "AI刷题侠服务启动失败，请查看日志：${LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
+    return 1
+  fi
+}
+
+stop_app() {
+  if ! is_running; then
+    rm -f "$PID_FILE"
+    return 0
+  fi
+
+  pid="$(cat "$PID_FILE")"
+  kill "$pid" 2>/dev/null || true
+
+  count=0
+  while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 20 ]; do
+    sleep 1
+    count=$((count + 1))
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+
+  rm -f "$PID_FILE"
+  rm -f "$SOCKET_FILE"
+}
+
+case "${1:-}" in
+  start)
+    start_app
+    ;;
+  stop)
+    stop_app
+    ;;
+  status)
+    if is_running; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  *)
+    exit 1
+    ;;
+esac

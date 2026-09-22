@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/theme.tsx","./src/vite-env.d.ts","./src/components/layout.tsx","./src/pages/bankdetail.tsx","./src/pages/favorites.tsx","./src/pages/home.tsx","./src/pages/import.tsx","./src/pages/paper.tsx","./src/pages/practice.tsx","./src/pages/settings.tsx","./src/pages/stats.tsx","./src/pages/wrong.tsx"],"version":"5.9.3"}
