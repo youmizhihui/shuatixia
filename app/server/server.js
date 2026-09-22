@@ -14,11 +14,12 @@ const http = require('node:http');
 const path = require('node:path');
 const fs = require('node:fs');
 const { initDb, getDb, genId, nowLocal, migrate } = require('./db');
-const { parseFile } = require('./import/worker');
+const { parseFile, summarize } = require('./import/worker');
+const spec = require('./import/spec');
 const judge = require('./judge');
 const ai = require('./ai');
 
-/** 导入预览缓存：token → { bankId, result, ts }（10 分钟有效） */
+/** 导入预览缓存：token → { bankId, result, fingerprint, ts, buffer, sample, specSignature, specKind }（10 分钟有效） */
 const importCache = new Map();
 const IMPORT_TTL = 10 * 60 * 1000;
 const MAX_BODY = 4 * 1024 * 1024;  // JSON 体上限
@@ -341,19 +342,151 @@ function createRouter() {
     const file = parts.find((p) => p.name === 'file' && p.body.length > 0);
     if (!file) throw httpError(400, '未收到文件（字段名应为 file）');
 
-    const result = await parseFile(file.body, file.filename || 'upload.bin');
+    let result = await parseFile(file.body, file.filename || 'upload.bin');
     const crypto = require('node:crypto');
     const fingerprint = 'sha1:' + crypto.createHash('sha1').update(file.body).digest('hex').slice(0, 24);
     const tpl = db.prepare('SELECT template FROM import_templates WHERE owner_id=? AND fingerprint=?').get(u.uid, fingerprint);
+
+    // 格式规范：签名命中 → 自动按已存规范解析（已存在规范优先，不打扰用户）
+    let specSignature = null;
+    let specKind = null;
+    let specApplied = false;
+    const rawText = result.text || '';
+    if (result.format === 'excel' && result.mode === 'table') {
+      const prev = spec.excelPreview(file.body);
+      if (prev.headers.length) {
+        specKind = 'excel';
+        specSignature = spec.excelSignature(prev.headers);
+        const s = spec.getSpec(db, u.uid, 'excel', specSignature);
+        if (s) {
+          specApplied = true;
+          const sp = spec.parseExcelWithSpec(file.body, s);
+          result = {
+            format: 'excel', name: file.filename, ok: true, mode: 'table',
+            questions: sp.questions, failed: sp.failed,
+            summary: summarize(sp.questions, sp.failed),
+          };
+          spec.bumpSpecHit(db, u.uid, 'excel', specSignature);
+        }
+      }
+    } else if (rawText && rawText.trim()) {
+      specKind = 'text';
+      specSignature = spec.textSignature(rawText);
+      const s = spec.getSpec(db, u.uid, 'text', specSignature);
+      if (s) {
+        specApplied = true;
+        const sp = spec.parseTextWithSpec(rawText, s);
+        result = {
+          ...result,
+          questions: sp.questions,
+          failed: sp.failed,
+          summary: summarize(sp.questions, sp.failed),
+        };
+        spec.bumpSpecHit(db, u.uid, 'text', specSignature);
+      }
+    }
+
     const token = genId('imp');
-    importCache.set(token, { bankId: params.id, result, fingerprint, ts: Date.now() });
-    return { token, summary: result.summary || null, format: result.format, name: file.filename, ok: result.ok, empty: !!result.empty, hint: result.hint, error: result.error, template_hit: tpl ? JSON.parse(tpl.template) : null };
+    importCache.set(token, {
+      bankId: params.id, result, fingerprint, ts: Date.now(),
+      buffer: file.body, format: result.format,
+      specSignature, specKind,
+    });
+    return {
+      token, summary: result.summary || null, format: result.format, name: file.filename,
+      ok: result.ok, empty: !!result.empty, hint: result.hint, error: result.error,
+      template_hit: tpl ? JSON.parse(tpl.template) : null,
+      spec_hit: specApplied ? { kind: specKind, signature: specSignature } : null,
+    };
+  };
+
+  /** AI 识别格式（手动触发）：返回样例 + AI 建议规范 */
+  router['POST /api/imports/:token/format-hint'] = async (body, params, req) => {
+    const u = getUser(req);
+    if (!u) throw httpError(401, '未登录，请先登录飞牛');
+    const hit = getImport(params.token);
+    if (!hit) throw httpError(404, '导入预览已过期，请重新上传');
+    const cfg = ai.getConfig();
+    if (!cfg) throw httpError(400, '尚未配置 AI 模型，请先在设置页填写 API 地址与 Key');
+    const kind = (hit.format === 'excel' && hit.result.mode === 'table') ? 'excel' : 'text';
+    let sample = '';
+    let headers = [];
+    if (kind === 'excel') {
+      const prev = spec.excelPreview(hit.buffer, 5);
+      headers = prev.headers;
+      sample = '表头: ' + prev.headers.join(' | ') + '\n' +
+        prev.rows.map((r) => '样例行: ' + r.join(' | ')).join('\n');
+    } else {
+      sample = spec.textSample(hit.result.text || hit.result.raw || '');
+    }
+    let hint;
+    try {
+      hint = await ai.suggestFormat(kind, sample, cfg, { db: getDb(), userId: u.uid });
+    } catch (e) {
+      console.error('[shuatixia][format-hint] fail kind=%s sample=%j err=%s', kind, String(sample).slice(0, 400), e.message);
+      throw e;
+    }
+    return { kind, sample, headers, hint };
+  };
+
+  /** 确认格式规范：按规范解析全文 → 更新预览 → 存模板 */
+  router['POST /api/imports/:token/apply-format'] = async (body, params, req) => {
+    const u = getUser(req);
+    if (!u) throw httpError(401, '未登录，请先登录飞牛');
+    const hit = getImport(params.token);
+    if (!hit) throw httpError(404, '导入预览已过期，请重新上传');
+    const sp = body && body.spec;
+    if (!sp || typeof sp !== 'object' || !sp.kind) throw httpError(400, '缺少格式规范');
+    const db = getDb();
+    const text = hit.result.text || hit.result.raw || '';
+
+    let newResult;
+    if (sp.kind === 'excel') {
+      const everr = spec.validateExcelSpec(sp);
+      if (everr) throw httpError(400, '格式规范校验未通过：' + everr);
+      const p = spec.parseExcelWithSpec(hit.buffer, sp);
+      newResult = {
+        format: 'excel', name: hit.result.name, ok: true, mode: 'table',
+        questions: p.questions, failed: p.failed,
+        summary: summarize(p.questions, p.failed),
+      };
+    } else if (text.trim()) {
+      const verr = spec.validateTextSpec(sp, spec.textSample(text));
+      if (verr) throw httpError(400, '格式规范校验未通过：' + verr);
+      const p = spec.parseTextWithSpec(text, sp);
+      newResult = {
+        ...hit.result,
+        questions: p.questions,
+        failed: p.failed,
+        summary: summarize(p.questions, p.failed),
+      };
+    } else {
+      throw httpError(400, '文件没有可解析的文本内容');
+    }
+
+    // 计算签名并存规范（幂等 upsert，hits 记使用次数）
+    let signature;
+    if (sp.kind === 'excel') {
+      const prev = spec.excelPreview(hit.buffer);
+      signature = spec.excelSignature(prev.headers);
+    } else {
+      signature = spec.textSignature(text);
+    }
+    spec.saveSpec(db, genId, nowLocal, u.uid, sp.kind, signature, sp);
+    spec.bumpSpecHit(db, u.uid, sp.kind, signature);
+
+    hit.result = newResult;
+    hit.specSignature = signature;
+    hit.specKind = sp.kind;
+    const { text: _omit, ...rest } = newResult;
+    return rest;
   };
 
   router['GET /api/imports/:token'] = async (body, params) => {
     const hit = getImport(params.token);
     if (!hit) throw httpError(404, '导入预览已过期，请重新上传');
-    return hit.result;
+    const { text, ...rest } = hit.result;
+    return rest;
   };
 
   router['POST /api/imports/:token/commit'] = async (body, params, req) => {

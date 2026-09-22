@@ -95,6 +95,7 @@ async function parseFile(buffer, filename) {
     questions: parsed.questions,
     failed,
     raw: text.slice(0, 2000),
+    text, // 全文文本（供格式签名与 AI 规范解析使用；超大文件已按 MAX_TEXT 截断）
     summary: summarize(parsed.questions, failed),
   };
 }

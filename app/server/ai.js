@@ -116,16 +116,21 @@ async function callLLM(cfg, messages, opts = {}) {
   return { text, usage: data.usage || {} };
 }
 
-/** 宽松 JSON 解析：优先找 [...]; 再试 {...} */
+/** 宽松 JSON 解析：整体 JSON 优先；再退代码块、对象、数组提取（数组提取放最后，避免误吞对象内嵌套数组） */
 function looseParse(content) {
   const t = String(content).trim();
-  const arrMatch = t.match(/\[[\s\S]*\]/);
-  if (arrMatch) {
-    try { return JSON.parse(arrMatch[0]); } catch (e) { /* fallthrough */ }
+  try { return JSON.parse(t); } catch (e) { /* fallthrough */ }
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) {
+    try { return JSON.parse(fence[1].trim()); } catch (e) { /* fallthrough */ }
   }
   const objMatch = t.match(/\{[\s\S]*\}/);
   if (objMatch) {
     try { return JSON.parse(objMatch[0]); } catch (e) { /* fallthrough */ }
+  }
+  const arrMatch = t.match(/\[[\s\S]*\]/);
+  if (arrMatch) {
+    try { return JSON.parse(arrMatch[0]); } catch (e) { /* fallthrough */ }
   }
   return null;
 }
@@ -252,6 +257,106 @@ async function parseBlocks(blocks, cfg, opts = {}) {
   return all;
 }
 
+// ==================== AI 识别格式（生成解析规范） ====================
+
+const SPEC_TEXT_SYSTEM = `你是题库文件格式分析助手。下面是某题库文件的样例（前若干行）。请分析它的排版结构，输出一个"解析规范" JSON，供程序用正则切分题目。只输出 JSON，不要输出其他文字。
+
+规范格式（JavaScript 正则，注意转义；**捕获组数量有约定**，程序按组索引取内容）：
+{
+  "kind": "text",
+  "stem": { "regex": "题干行正则，第1组必须是题干文本；若行带题号，可用2组（第1组题号、第2组题干），也可只用1组（仅题干）；例如 ^(\\d{1,4})[.、．)）]\\s*(.+)$ 或 ^【题目】\\s*(.+)$" },
+  "options": { "regex": "选项行正则，必须恰好 2 个捕获组：第1组=选项字母、第2组=选项文本；例如 ^([A-H])[.、．)）]\\s*(.+)$ 或 ^选项\\s*([A-H])[：:]\\s*(.+)$" },
+  "answer": { "regex": "答案行正则，第1组为答案；例如 ^(?:【答案】|答案[:：]\\s*|正确答案[:：]\\s*)([A-H\\s,，、√×TF对错]+)$" },
+  "explanation": { "regex": "解析行正则，第1组为解析文本；没有则空字符串" },
+  "chapter": { "regex": "章节/知识点行正则，必须 2 个捕获组且第2组为章节名；没有则空字符串" },
+  "chapterTitle": { "regex": "章节标题行正则，第1组为标题；没有则空字符串" },
+  "typeMark": { "regex": "题型标注行正则，第1组为 单选/多选/判断；没有则空字符串" },
+  "defaultType": "single 或 multiple 或 judge 或 null（整份文件固定题型时填写）"
+}
+要点：正则必须与样例实际结构一致；无法确定结构的字段给 ""（程序忽略该字段）；选项与章节正则的捕获组数量必须符合上述约定。`;
+
+const SPEC_EXCEL_SYSTEM = `你是题库文件格式分析助手。下面是某 Excel/CSV 题库文件的表头行与数据样例。请输出一个完整的"字段映射规范" JSON 对象，把每个表头列名映射到系统字段。只输出 JSON 对象，不要输出数组、不要输出其他文字。
+
+必须输出的完整结构（示例，列名请按实际表头替换）：
+{"kind":"excel","headerRow":0,"columns":{"stem":"题目","answer":"答案","options":["选项A","选项B","选项C","选项D"],"explanation":"解析","chapter":"章节","type":"题型"}}
+要求：列名必须逐字来自表头，不得改写；选项最多 8 列；找不到对应字段填空字符串 ""。`;
+
+/** 文本规范结构校验 */
+function isTextSpec(s) {
+  return !!s && typeof s === 'object' && !Array.isArray(s) &&
+    s.stem && typeof s.stem === 'object' && typeof s.stem.regex === 'string' &&
+    s.options && typeof s.options === 'object' && typeof s.options.regex === 'string';
+}
+
+/** Excel 规范结构校验 */
+function isExcelSpec(s) {
+  return !!s && typeof s === 'object' && !Array.isArray(s) &&
+    s.columns && typeof s.columns === 'object' &&
+    typeof s.columns.stem === 'string' && !!s.columns.stem;
+}
+
+/** Excel 规范归一化：兼容 options 数组与 option1..option8 两种 AI 输出形式 */
+function normalizeExcelSpec(s) {
+  if (!isExcelSpec(s)) return null;
+  const c = s.columns;
+  let opts = Array.isArray(c.options) ? c.options.filter((o) => typeof o === 'string' && o) : [];
+  if (!opts.length) {
+    for (let i = 1; i <= 8; i++) {
+      if (typeof c['option' + i] === 'string' && c['option' + i]) opts.push(c['option' + i]);
+    }
+  }
+  return {
+    kind: 'excel',
+    headerRow: typeof s.headerRow === 'number' ? s.headerRow : 0,
+    columns: {
+      stem: c.stem,
+      answer: typeof c.answer === 'string' ? c.answer : '',
+      options: opts.slice(0, 8),
+      explanation: typeof c.explanation === 'string' ? c.explanation : '',
+      chapter: typeof c.chapter === 'string' ? c.chapter : '',
+      type: typeof c.type === 'string' ? c.type : '',
+    },
+  };
+}
+
+/**
+ * AI 生成格式规范（仅手动触发）
+ * @param {string} kind 'text' | 'excel'
+ * @param {string} sample 样例文本（text=前若干行；excel=表头+样例行拼接）
+ * @param {object} cfg LLM 配置
+ * @param {object} usage { db, userId, model }
+ * @returns {Promise<object>} 规范 JSON
+ */
+async function suggestFormat(kind, sample, cfg, usage) {
+  const system = kind === 'excel' ? SPEC_EXCEL_SYSTEM : SPEC_TEXT_SYSTEM;
+  let spec = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const userMsg = attempt === 0
+      ? '文件样例：\n' + sample
+      : '上次输出结构不正确。请严格按要求的 JSON 对象结构重新输出（不要数组、不要多余文字）。\n文件样例：\n' + sample;
+    const { text } = await callLLM(cfg, [
+      { role: 'system', content: system },
+      { role: 'user', content: userMsg },
+    ], { json: true });
+    const parsed = looseParse(text);
+    if (kind === 'excel') {
+      const norm = normalizeExcelSpec(parsed);
+      if (norm) { spec = norm; break; }
+    } else if (isTextSpec(parsed)) {
+      spec = parsed;
+      break;
+    }
+  }
+  if (!spec) {
+    const e = new Error('AI 返回的格式规范结构不完整，请重试；或稍后手动在预览页填写');
+    e.status = 502;
+    throw e;
+  }
+  spec.kind = kind;
+  if (usage) recordUsage(usage.db, usage.userId, 'format-suggest', cfg.model, 0, sample.length);
+  return spec;
+}
+
 module.exports = {
   setConfigFile,
   getConfig,
@@ -262,4 +367,5 @@ module.exports = {
   explainQuestion,
   parseBlocks,
   splitBlocks,
+  suggestFormat,
 };

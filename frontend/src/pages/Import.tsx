@@ -3,21 +3,96 @@
  * 步骤：① 选择目标题库 → ② 选择文件 → ③ 识别预览（可编辑/待处理） → ④ 确认入库
  * AI 解析：待处理块手动触发（确认弹窗明示发送范围），结果回填预览可复核
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Message, Select, Input, Radio, Skeleton, Modal, Spin } from '@arco-design/web-react';
 import { IconUpload, IconCheckCircle, IconExclamationCircle, IconRobot, IconLeft } from '@arco-design/web-react/icon';
-import { api, type Bank, type ImportResult, type Question } from '../api';
+import { api, type Bank, type ImportResult, type Question, type FormatHint, type ImportSpec } from '../api';
 
 const ACCEPT = '.xlsx,.xls,.csv,.docx,.pdf,.txt';
-const TYPE_OPTIONS = [
-  { label: '单选', value: 'single' },
-  { label: '多选', value: 'multiple' },
-  { label: '判断', value: 'judge' },
-  { label: '待处理', value: 'unknown' },
-];
+const PAGE_SIZE = 50; // 预览编辑分页大小（700+ 题一次全渲染会卡）
+
+/** AI 识别格式：确认弹窗里的可编辑规范（宽松结构，apply 时按 ImportSpec 提交） */
+type FmtSpecDraft = {
+  kind: string;
+  stem?: { regex?: string };
+  options?: { regex?: string };
+  answer?: { regex?: string };
+  explanation?: { regex?: string };
+  chapter?: { regex?: string };
+  chapterTitle?: { regex?: string };
+  typeMark?: { regex?: string };
+  defaultType?: string;
+  headerRow?: number;
+  columns?: Record<string, unknown>;
+};
 
 type Step = 'pick' | 'uploading' | 'preview';
+
+/** 单题编辑卡片：memo 化，只有本卡片数据变化时才重渲染 */
+const QuestionCard = memo(function QuestionCard({
+  q, idx, onPatch, onRemove,
+}: {
+  q: Question;
+  idx: number;
+  onPatch: (i: number, p: Partial<Question>) => void;
+  onRemove: (i: number) => void;
+}) {
+  return (
+    <div className="card-note flex flex-col gap-3 p-5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-ink3">#{idx + 1}</span>
+        <div className="flex items-center gap-2">
+          <Radio.Group
+            type="button"
+            size="small"
+            value={q.type === 'unknown' ? 'unknown' : q.type}
+            options={[
+              { label: '单选', value: 'single' },
+              { label: '多选', value: 'multiple' },
+              { label: '判断', value: 'judge' },
+              { label: '待处理', value: 'unknown' },
+            ]}
+            onChange={(v) => onPatch(idx, { type: String(v) })}
+          />
+          <button onClick={() => onRemove(idx)} className="text-xs text-ink3 hover:text-danger transition-colors">
+            删除
+          </button>
+        </div>
+      </div>
+      <Input.TextArea
+        autoSize={{ minRows: 1, maxRows: 4 }}
+        value={q.stem}
+        placeholder="题干"
+        onChange={(v) => onPatch(idx, { stem: v })}
+      />
+      {q.options && q.options.length > 0 && (
+        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+          {q.options.map((o, oi) => (
+            <div key={oi} className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-ink3 w-4">{o.k}</span>
+              <Input size="small" value={o.text} placeholder={`选项 ${o.k}`}
+                onChange={(v) => onPatch(idx, { options: q.options!.map((x, xi) => (xi === oi ? { ...x, text: v } : x)) })} />
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="mb-1 text-[11px] text-ink3">答案{q.type === 'multiple' ? '（如 AC）' : q.type === 'judge' ? '（对/错）' : ''}</div>
+          <Input size="small" value={q.answer}
+            placeholder={q.type === 'judge' ? '对 / 错' : q.type === 'multiple' ? '如 AC' : '如 A'}
+            onChange={(v) => onPatch(idx, { answer: v })} />
+        </div>
+        <div>
+          <div className="mb-1 text-[11px] text-ink3">解析（可选）</div>
+          <Input size="small" value={q.explanation || ''} placeholder="解析"
+            onChange={(v) => onPatch(idx, { explanation: v })} />
+        </div>
+      </div>
+    </div>
+  );
+});
 
 export default function Import() {
   const nav = useNavigate();
@@ -36,6 +111,12 @@ export default function Import() {
   const [aiParsing, setAiParsing] = useState(false);
   const [aiDone, setAiDone] = useState(0); // 已 AI 解析成功题数
   const [llmModel, setLlmModel] = useState('');
+  // AI 识别格式：确认弹窗状态
+  const [fmtModal, setFmtModal] = useState(false);
+  const [fmtLoading, setFmtLoading] = useState(false); // 正在请求 AI 生成规范
+  const [fmtHint, setFmtHint] = useState<FormatHint | null>(null);
+  const [fmtSpec, setFmtSpec] = useState<FmtSpecDraft | null>(null); // 编辑中的规范
+  const [fmtApplying, setFmtApplying] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadBanks = useCallback(() => {
@@ -66,6 +147,8 @@ export default function Import() {
       setStep('preview');
       if (r.template_hit) {
         Message.success(`已识别该文件（上次导入 ${r.template_hit.imported} 题），确认后入库即可，无需重新解析`);
+      } else if (r.spec_hit) {
+        Message.success('已按上次保存的格式规范解析该文件，可复核后入库');
       } else if (full.empty && full.hint) {
         Message.info(full.hint);
       }
@@ -75,10 +158,19 @@ export default function Import() {
     }
   };
 
-  const patch = (i: number, p: Partial<Question>) =>
-    setEdits((prev) => prev.map((q, idx) => (idx === i ? { ...q, ...p } : q)));
+  const patch = useCallback((i: number, p: Partial<Question>) =>
+    setEdits((prev) => prev.map((q, idx) => (idx === i ? { ...q, ...p } : q))), []);
 
-  const remove = (i: number) => setEdits((prev) => prev.filter((_, idx) => idx !== i));
+  const remove = useCallback((i: number) => setEdits((prev) => prev.filter((_, idx) => idx !== i)), []);
+
+  // 分页：防止 700+ 题一次全渲染导致卡顿
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(edits.length / PAGE_SIZE));
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+  const pageStart = (page - 1) * PAGE_SIZE;
+  const pageItems = edits.slice(pageStart, pageStart + PAGE_SIZE);
 
   const commit = async () => {
     setCommitting(true);
@@ -94,7 +186,7 @@ export default function Import() {
 
   const okCount = useMemo(() => edits.filter((q) => q.type !== 'unknown' && q.answer).length, [edits]);
   const needAi = useMemo(
-    () => (result ? result.failed.length + result.questions.filter((q) => q.type === 'unknown' || !q.answer).length : 0),
+    () => (result ? result.failed.length + result.questions.filter((q) => q.type === 'unknown' || !q.answer || !q.options?.length).length : 0),
     [result]
   );
 
@@ -121,6 +213,66 @@ export default function Import() {
       }
     } finally {
       setAiParsing(false);
+    }
+  };
+
+  /** AI 识别格式：请求 AI 生成规范（手动触发） */
+  const runFormatHint = async () => {
+    if (!token) return;
+    setFmtLoading(true);
+    try {
+      const h = await api.formatHint(token);
+      setFmtHint(h);
+      setFmtSpec(h.hint as unknown as FmtSpecDraft);
+      setFmtModal(true);
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg.includes('尚未配置')) {
+        Message.warning('尚未配置 AI 模型，可先手动补录或去设置页配置');
+        nav('/settings');
+      } else {
+        Message.error(msg);
+      }
+    } finally {
+      setFmtLoading(false);
+    }
+  };
+
+  /** 文本规范字段更新 */
+  const patchTextSpec = (field: string, regex: string) =>
+    setFmtSpec((prev) => ({ ...(prev ?? { kind: 'text' }), [field]: { regex } } as FmtSpecDraft));
+
+  /** Excel 规范列映射更新 */
+  const patchExcelCol = (field: string, value: string) =>
+    setFmtSpec((prev) => {
+      const s = { ...(prev ?? { kind: 'excel', headerRow: 0, columns: {} }) } as FmtSpecDraft;
+      return { ...s, columns: { ...(s.columns || {}), [field]: value } };
+    });
+
+  const patchExcelOption = (i: number, value: string) =>
+    setFmtSpec((prev) => {
+      const s = { ...(prev ?? { kind: 'excel', headerRow: 0, columns: {} }) } as FmtSpecDraft;
+      const opts = Array.isArray(s.columns?.options) ? [...(s.columns.options as string[])] : [];
+      while (opts.length <= i) opts.push('');
+      opts[i] = value;
+      return { ...s, columns: { ...(s.columns || {}), options: opts } };
+    });
+
+  /** 应用格式规范：按规范解析全文 → 刷新预览 → 保存模板 */
+  const applyFormat = async () => {
+    if (!fmtSpec) return;
+    setFmtApplying(true);
+    try {
+      const r = await api.applyFormat(token, fmtSpec as unknown as ImportSpec);
+      setResult(r);
+      setEdits(r.questions);
+      setPage(1);
+      setFmtModal(false);
+      Message.success(`已按格式规范重新解析出 ${r.summary.total} 题，可复核后入库；同排版文件下次将自动使用该格式`);
+    } catch (e) {
+      Message.error((e as Error).message);
+    } finally {
+      setFmtApplying(false);
     }
   };
 
@@ -185,6 +337,30 @@ export default function Import() {
           </div>
         )}
 
+        {/* 格式识别不完整 → 手动触发 AI 识别格式 */}
+        {(needAi > 0 || (result.summary?.total ?? 0) === 0 || result.questions.some((q) => !q.options || q.options.length === 0)) && (
+          <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 dark:border-primary/40 dark:bg-primary/10">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-sm font-medium text-primary">
+                <IconRobot /> 文件排版未能完全识别
+              </div>
+              <button
+                onClick={runFormatHint}
+                disabled={fmtLoading}
+                className="flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {fmtLoading ? <Spin size={12} /> : <IconRobot />}
+                {fmtLoading ? 'AI 分析排版中…' : 'AI 识别格式'}
+              </button>
+            </div>
+            <div className="mt-2 text-xs leading-5 text-ink3">
+              规则引擎不认识这份文件的排版时，可让 AI 分析样例（前几十行 / 表头+几行数据），
+              自动生成题干/选项/答案/解析的匹配规则后重新解析整份文件。
+              仅发送样例与固定指令、手动触发、Key 仅存 NAS；确认后的规则会保存，同排版文件下次自动复用。
+            </div>
+          </div>
+        )}
+
         {/* 待处理原文块 */}
         {result.failed.length > 0 && (
           <div className="rounded-xl border border-orange-200 bg-orange-50/60 p-4 dark:border-orange-900/40 dark:bg-orange-900/10">
@@ -212,56 +388,31 @@ export default function Import() {
           </div>
         )}
 
-        {/* 预览题目列表（可编辑） */}
+        {/* 预览题目列表（可编辑，分页） */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-card px-4 py-2.5 text-sm">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="rounded-lg border border-line px-3 py-1 text-ink2 transition-colors hover:text-primary disabled:opacity-40"
+            >
+              上一页
+            </button>
+            <span className="text-ink2">
+              第 <b className="text-ink">{page}</b> / {totalPages} 页 · 共 {edits.length} 题
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="rounded-lg border border-line px-3 py-1 text-ink2 transition-colors hover:text-primary disabled:opacity-40"
+            >
+              下一页
+            </button>
+          </div>
+        )}
         <div className="flex flex-col gap-3">
-          {edits.map((q, i) => (
-            <div key={i} className="card-note flex flex-col gap-3 p-5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-ink3">#{i + 1}</span>
-                <div className="flex items-center gap-2">
-                  <Radio.Group
-                    type="button"
-                    size="small"
-                    value={q.type === 'unknown' ? 'unknown' : q.type}
-                    options={TYPE_OPTIONS}
-                    onChange={(v) => patch(i, { type: String(v) })}
-                  />
-                  <button onClick={() => remove(i)} className="text-xs text-ink3 hover:text-danger transition-colors">
-                    删除
-                  </button>
-                </div>
-              </div>
-              <Input.TextArea
-                autoSize={{ minRows: 1, maxRows: 4 }}
-                value={q.stem}
-                placeholder="题干"
-                onChange={(v) => patch(i, { stem: v })}
-              />
-              {q.options && q.options.length > 0 && (
-                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                  {q.options.map((o, oi) => (
-                    <div key={oi} className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-ink3 w-4">{o.k}</span>
-                      <Input size="small" value={o.text} placeholder={`选项 ${o.k}`}
-                        onChange={(v) => patch(i, { options: q.options!.map((x, xi) => (xi === oi ? { ...x, text: v } : x)) })} />
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <div className="mb-1 text-[11px] text-ink3">答案{q.type === 'multiple' ? '（如 AC）' : q.type === 'judge' ? '（对/错）' : ''}</div>
-                  <Input size="small" value={q.answer}
-                    placeholder={q.type === 'judge' ? '对 / 错' : q.type === 'multiple' ? '如 AC' : '如 A'}
-                    onChange={(v) => patch(i, { answer: v })} />
-                </div>
-                <div>
-                  <div className="mb-1 text-[11px] text-ink3">解析（可选）</div>
-                  <Input size="small" value={q.explanation || ''} placeholder="解析"
-                    onChange={(v) => patch(i, { explanation: v })} />
-                </div>
-              </div>
-            </div>
+          {pageItems.map((q, i) => (
+            <QuestionCard key={pageStart + i} q={q} idx={pageStart + i} onPatch={patch} onRemove={remove} />
           ))}
         </div>
 
@@ -275,6 +426,122 @@ export default function Import() {
             {committing ? '入库中…' : `确认入库 ${okCount} 题`}
           </button>
         </div>
+
+        {/* AI 识别格式确认（正则 / 列映射可直接编辑） */}
+        <Modal
+          title="AI 生成的格式规范 — 确认后应用到整份文件"
+          visible={fmtModal}
+          onCancel={() => setFmtModal(false)}
+          onOk={applyFormat}
+          okText={fmtApplying ? '解析中…' : '按此格式解析全部'}
+          cancelText="取消"
+          confirmLoading={fmtApplying}
+          style={{ width: 720, maxHeight: '80vh' }}
+        >
+          <div className="flex flex-col gap-4 overflow-auto text-sm text-ink2">
+            {fmtSpec && fmtSpec.kind === 'text' && (
+              <>
+                <div className="rounded-lg bg-canvas p-3 text-xs leading-5 text-ink3">
+                  以下为正则规则，由 AI 根据样例生成，可直接修改后确认（将应用到整份文件）。
+                  题干行需 1~2 个捕获组（第 1 组为题干），选项行需 2 个捕获组（第 1 组字母、第 2 组文本）。
+                </div>
+                {(
+                  [
+                    ['stem', '题干行正则'],
+                    ['options', '选项行正则'],
+                    ['answer', '答案行正则'],
+                    ['explanation', '解析行正则'],
+                    ['chapter', '章节行正则'],
+                    ['chapterTitle', '章节标题正则'],
+                    ['typeMark', '题型标注正则'],
+                  ] as [string, string][]
+                ).map(([f, label]) => (
+                  <div key={f} className="flex flex-col gap-1">
+                    <div className="text-xs text-ink3">{label}</div>
+                    <Input
+                      size="small"
+                      value={(fmtSpec[f as 'stem' | 'options' | 'answer' | 'explanation' | 'chapter' | 'chapterTitle' | 'typeMark'] as { regex?: string } | undefined)?.regex ?? ''}
+                      placeholder="（未识别，留空）"
+                      onChange={(v) => patchTextSpec(f, v)}
+                      style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}
+                    />
+                  </div>
+                ))}
+                <div className="flex flex-col gap-1">
+                  <div className="text-xs text-ink3">整份文件固定题型（判断题 / 单选等；不确定选「不固定」）</div>
+                  <Select
+                    size="small"
+                    className="w-40"
+                    value={fmtSpec.defaultType ?? 'null'}
+                    onChange={(v) => patchTextSpec('defaultType', v === 'null' ? 'null' : String(v))}
+                    options={[
+                      { label: '不固定（按内容判断）', value: 'null' },
+                      { label: '单选', value: 'single' },
+                      { label: '多选', value: 'multiple' },
+                      { label: '判断', value: 'judge' },
+                    ]}
+                  />
+                </div>
+              </>
+            )}
+
+            {fmtSpec && fmtSpec.kind === 'excel' && (
+              <>
+                <div className="rounded-lg bg-canvas p-3 text-xs leading-5 text-ink3">
+                  AI 已根据表头生成列映射，可直接在下拉中修改（列名必须与表头逐字一致），确认后按此映射解析全部行。
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {(
+                    [
+                      ['stem', '题干列（必填）'],
+                      ['answer', '答案列'],
+                      ['explanation', '解析列'],
+                      ['chapter', '章节列'],
+                      ['type', '题型列'],
+                    ] as [string, string][]
+                  ).map(([f, label]) => (
+                    <div key={f} className="flex flex-col gap-1">
+                      <div className="text-xs text-ink3">{label}</div>
+                      <Select
+                        size="small"
+                        allowClear
+                        placeholder="选择列"
+                        value={(fmtSpec.columns?.[f] as string | undefined) || undefined}
+                        onChange={(v) => patchExcelCol(f, v ? String(v) : '')}
+                        options={fmtHint?.headers.map((h) => ({ label: h, value: h })) ?? []}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-col gap-1">
+                  <div className="text-xs text-ink3">选项列（按顺序映射为 A/B/C/D）</div>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <Select
+                        key={i}
+                        size="small"
+                        allowClear
+                        placeholder={`选项 ${String.fromCharCode(65 + i)}`}
+                        value={(fmtSpec.columns?.options as string[] | undefined)?.[i] || undefined}
+                        onChange={(v) => patchExcelOption(i, v ? String(v) : '')}
+                        options={fmtHint?.headers.map((h) => ({ label: h, value: h })) ?? []}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="rounded-lg bg-canvas p-3 text-xs leading-5 text-ink3">
+              <div className="flex items-center gap-1 font-medium text-ink2"><IconCheckCircle /> 调用机制与隐私</div>
+              <ul className="m-0 mt-1 flex flex-col gap-1 pl-4">
+                <li>手动触发：只有你点击「{fmtApplying ? '解析中…' : 'AI 识别格式'}」才会发送样例，不会自动发生</li>
+                <li>只发送文件样例（文本前几十行 / 表头加几行数据）与固定指令，尽量省 token</li>
+                <li>请求只发到你填写的 API 地址，Key 仅存 NAS、界面不回显；确认后的规则仅保存在你的 NAS 上</li>
+              </ul>
+            </div>
+          </div>
+        </Modal>
 
         {/* AI 解析确认（调用前明示发送范围与机制） */}
         <Modal

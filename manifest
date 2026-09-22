@@ -1,5 +1,5 @@
 appname=shuatixia
-version=0.3.3
+version=0.4.0
 display_name=AI刷题侠
 desc=家庭刷题应用：导入 PDF/Word/Excel 题库，顺序练习、模拟考试、错题集、收藏与学习统计。AI 可选：题目识别与逐题讲解，全部手动触发，题目与 Key 仅存本地 NAS，隐私可控。
 source=thirdparty

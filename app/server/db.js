@@ -108,6 +108,18 @@ CREATE TABLE IF NOT EXISTS import_templates (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_import_templates_fp ON import_templates(fingerprint, owner_id);
 
+-- 格式规范模板（AI 识别格式后确认保存；按格式签名命中自动复用）
+CREATE TABLE IF NOT EXISTS import_specs (
+  id         TEXT PRIMARY KEY,
+  owner_id   TEXT NOT NULL,
+  kind       TEXT NOT NULL,   -- 'text' | 'excel'
+  signature  TEXT NOT NULL,   -- 格式签名（文本=行首模式序列哈希；excel=表头哈希）
+  spec       TEXT NOT NULL,   -- 规范 JSON
+  hits       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_import_specs_sig ON import_specs(owner_id, kind, signature);
+
 CREATE TABLE IF NOT EXISTS setting (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

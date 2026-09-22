@@ -69,6 +69,43 @@ export interface ImportResult {
   summary: ImportSummary;
 }
 
+/** AI 识别格式：样例 + AI 建议规范 */
+export interface FormatHint {
+  kind: 'text' | 'excel';
+  sample: string;
+  headers: string[];
+  hint: Record<string, unknown>;
+}
+
+/** 文本格式规范（kind='text'）：每个字段 { regex } */
+export interface TextSpec {
+  kind: 'text';
+  stem: { regex: string };
+  options: { regex: string };
+  answer: { regex: string };
+  explanation?: { regex: string };
+  chapter?: { regex: string };
+  chapterTitle?: { regex: string };
+  typeMark?: { regex: string };
+  defaultType?: 'single' | 'multiple' | 'judge' | null;
+}
+
+/** Excel/CSV 格式规范（kind='excel'）：列名映射 */
+export interface ExcelSpec {
+  kind: 'excel';
+  headerRow: number;
+  columns: {
+    stem: string;
+    answer: string;
+    options: string[];
+    explanation?: string;
+    chapter?: string;
+    type?: string;
+  };
+}
+
+export type ImportSpec = TextSpec | ExcelSpec;
+
 export interface SettingsInfo {
   theme: string;
   llm_configured: boolean;
@@ -154,7 +191,7 @@ export const api = {
   importFile: (bankId: string, file: File) => {
     const fd = new FormData();
     fd.append('file', file);
-    return request<{ token: string; summary: ImportSummary | null; format: string; name: string; ok: boolean; empty?: boolean; hint?: string; error?: string; template_hit?: { bank_id: string; imported: number } | null }>(
+    return request<{ token: string; summary: ImportSummary | null; format: string; name: string; ok: boolean; empty?: boolean; hint?: string; error?: string; template_hit?: { bank_id: string; imported: number } | null; spec_hit?: { kind: string; signature: string } | null }>(
       'POST',
       `/banks/${bankId}/import`,
       fd,
@@ -164,6 +201,9 @@ export const api = {
   importResult: (token: string) => request<ImportResult>('GET', `/imports/${token}`),
   commitImport: (token: string, questions?: Question[]) =>
     request<{ bank_id: string; imported: number }>('POST', `/imports/${token}/commit`, { questions }),
+  // AI 识别格式：生成建议规范 / 应用并保存规范
+  formatHint: (token: string) => request<FormatHint>('POST', `/imports/${token}/format-hint`, {}),
+  applyFormat: (token: string, spec: ImportSpec) => request<ImportResult>('POST', `/imports/${token}/apply-format`, { spec }),
   settings: () => request<SettingsInfo>('GET', '/settings'),
   saveSettings: (theme: string) => request<{ ok: boolean }>('PUT', '/settings', { theme }),
   saveLlm: (body: { baseUrl: string; apiKey: string; model: string }) =>

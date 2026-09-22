@@ -7,7 +7,7 @@
  *  2) 标记格式：[Q]题干 [A]选项 [T]答案 [P]知识点 [I]题型码（无线电/驾考导出）
  */
 
-const RE = {
+const DEFAULT_RE = {
   // 题目起始：1. / 1、 / 1． / 1) / 1） 等
   qStart: /^\s*(\d{1,4})\s*[.、．)）]\s*(.+)$/,
   // 选项行：A.xxx / A、xxx / A．xxx / A) xxx
@@ -164,9 +164,11 @@ function parseMarked(text) {
 /**
  * 解析纯文本为题目列表
  * @param {string} text
+ * @param {object} [customRe] 可选：覆盖默认正则（AI 格式规范注入），key 与 DEFAULT_RE 相同
  * @returns {{questions:Array, failed:Array<string>}}
  */
-function parseText(text) {
+function parseText(text, customRe) {
+  const RE = customRe ? { ...DEFAULT_RE, ...customRe } : DEFAULT_RE;
   const lines = String(text || '')
     .replace(/\r\n?/g, '\n')
     .split('\n')
@@ -219,10 +221,11 @@ function parseText(text) {
     const qs = line.match(RE.qStart);
     if (qs) {
       pushCur();
+      const n = parseInt(qs[1], 10);
       cur = {
-        seq: parseInt(qs[1], 10),
+        seq: Number.isNaN(n) ? questions.length + 1 : n,
         type: curTypeMark || null,
-        stem: qs[2].trim(),
+        stem: (qs[2] || qs[1] || '').trim(),
         options: [],
         answer: '',
         explanation: '',
