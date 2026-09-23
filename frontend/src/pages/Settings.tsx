@@ -2,12 +2,24 @@
  * Settings.tsx — 设置：主题三态、LLM 配置、AI 调用记录、隐私说明
  */
 import { useEffect, useState } from 'react';
-import { Radio, Empty, Input, Message, Modal } from '@arco-design/web-react';
+import { Radio, Empty, Input, Message, Modal, Select } from '@arco-design/web-react';
 import { IconLock, IconRobot, IconGithub, IconSafe } from '@arco-design/web-react/icon';
 import { useTheme, type ThemeMode } from '../theme';
 import { api, type AiUsageItem, type SettingsInfo } from '../api';
 
 const KIND_LABEL: Record<string, string> = { explain: 'AI 讲解', parse: 'AI 解析' };
+
+/** 常用 OpenAI 兼容接口预设（选择后自动填充地址与默认模型，均可再手动改） */
+const LLM_PRESETS: { label: string; base: string; model: string }[] = [
+  { label: 'DeepSeek 深度求索', base: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { label: '豆包 / 火山方舟', base: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-32k' },
+  { label: 'OpenAI', base: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { label: '通义千问（阿里云百炼）', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+  { label: '智谱 GLM', base: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+  { label: 'Kimi（Moonshot）', base: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
+  { label: '硅基流动 SiliconFlow', base: 'https://api.siliconflow.cn/v1', model: 'deepseek-ai/DeepSeek-V3' },
+  { label: 'Ollama 本地模型', base: 'http://localhost:11434/v1', model: 'llama3' },
+];
 
 export default function Settings() {
   const { mode, setMode } = useTheme();
@@ -152,7 +164,7 @@ export default function Settings() {
             <div className="text-sm font-medium text-ink">开源项目 · MIT 协议</div>
             <div className="text-xs text-ink3">代码完全开源、零遥测、无广告，欢迎自行审计或贡献</div>
           </div>
-          <span className="shrink-0 rounded-lg bg-canvas px-3 py-1 text-xs text-ink3">AI刷题侠 v0.3.0</span>
+          <span className="shrink-0 rounded-lg bg-canvas px-3 py-1 text-xs text-ink3">AI刷题侠 v0.4.1</span>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-ink3">
           <div className="rounded-lg bg-canvas px-3 py-2">应用描述 · 隐私优先</div>
@@ -179,6 +191,19 @@ export default function Settings() {
               Key 只保存在你的 NAS 本地，仅由后端发起调用；界面与接口永不回显完整 Key。
               题目文本只会发送到你填写的这个地址。
             </span>
+          </div>
+          <div>
+            <div className="mb-1 text-xs text-ink3">常用接口（选择后自动填充地址与默认模型，可再手动改）</div>
+            <Select
+              allowClear
+              placeholder="选择常用接口，或直接手动填写下方地址"
+              value={LLM_PRESETS.find((p) => p.base === baseUrl)?.label ?? undefined}
+              onChange={(v) => {
+                const p = LLM_PRESETS.find((x) => x.label === v);
+                if (p) { setBaseUrl(p.base); setModel(p.model); }
+              }}
+              options={LLM_PRESETS.map((p) => ({ label: p.label, value: p.label }))}
+            />
           </div>
           <div>
             <div className="mb-1 text-xs text-ink3">API 地址（Base URL，OpenAI 兼容）</div>
