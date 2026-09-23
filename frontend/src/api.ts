@@ -206,7 +206,7 @@ export const api = {
   applyFormat: (token: string, spec: ImportSpec) => request<ImportResult>('POST', `/imports/${token}/apply-format`, { spec }),
   settings: () => request<SettingsInfo>('GET', '/settings'),
   saveSettings: (theme: string) => request<{ ok: boolean }>('PUT', '/settings', { theme }),
-  saveLlm: (body: { baseUrl: string; apiKey: string; model: string }) =>
+  saveLlm: (body: { baseUrl: string; apiKey: string; model: string; clearKey?: boolean }) =>
     request<SettingsInfo>('PUT', '/settings/llm', body),
   aiExplain: (questionId: string) =>
     request<{ cached: boolean; text: string }>('POST', '/ai/explain', { question_id: questionId }),

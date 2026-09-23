@@ -541,6 +541,7 @@ function createRouter() {
       baseUrl: body && body.baseUrl,
       apiKey: body && body.apiKey,
       model: body && body.model,
+      clearKey: !!(body && body.clearKey),
     });
     return { llm_configured: true, llm_model: cfg.model, llm_base: cfg.baseUrl, llm_key_tail: ai.maskKey(cfg.apiKey) };
   };

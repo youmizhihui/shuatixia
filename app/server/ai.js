@@ -36,17 +36,18 @@ function getConfig() {
   }
 }
 
-function saveConfig({ baseUrl, apiKey, model }) {
+function saveConfig({ baseUrl, apiKey, model, clearKey }) {
   if (!configFile) throw new Error('AI 配置目录未初始化');
   const old = getConfig() || {};
   const next = {
     baseUrl: String(baseUrl || old.baseUrl || '').trim(),
     model: String(model || old.model || '').trim(),
-    apiKey: String(apiKey || old.apiKey || '').trim(),
+    // clearKey=true 时显式清空；否则留空表示保留旧 Key（兼容 Ollama 等无需 Key 的本地服务）
+    apiKey: clearKey ? '' : String(apiKey || old.apiKey || '').trim(),
   };
   if (!next.baseUrl) throw new Error('API 地址不能为空');
   if (!next.model) throw new Error('模型名称不能为空');
-  if (!next.apiKey) throw new Error('API Key 不能为空');
+  // Key 允许为空：本地服务（Ollama 等）无需 Key；云端缺 Key 会在调用时报错提示
   fs.mkdirSync(path.dirname(configFile), { recursive: true });
   // Key 落盘权限收紧（类 Unix 环境生效；Windows 无效果）
   try { fs.writeFileSync(configFile, JSON.stringify(next, null, 2), { mode: 0o600 }); }
@@ -79,16 +80,16 @@ async function callLLM(cfg, messages, opts = {}) {
   };
   if (opts.json) payload.response_format = { type: 'json_object' };
 
+  const headers = { 'Content-Type': 'application/json' };
+  // 仅当配置了 Key 才发送 Authorization，避免旧 Key 随请求发往无需鉴权的本地服务（如 Ollama）
+  if (cfg.apiKey) headers['Authorization'] = 'Bearer ' + cfg.apiKey;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT);
   let res;
   try {
     res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + cfg.apiKey,
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: ctrl.signal,
     });

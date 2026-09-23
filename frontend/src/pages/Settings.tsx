@@ -32,6 +32,7 @@ export default function Settings() {
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [llmModal, setLlmModal] = useState(false);
+  const [clearKey, setClearKey] = useState(false); // 保存时显式清除已存 Key（Ollama 等本地服务无需 Key）
 
   const load = () => {
     api.settings().then((s) => {
@@ -52,14 +53,20 @@ export default function Settings() {
   const saveLlm = async () => {
     if (!baseUrl.trim()) { Message.warning('请填写 API 地址'); return; }
     if (!model.trim()) { Message.warning('请填写模型名称'); return; }
-    if (!apiKey.trim() && !info?.llm_configured) { Message.warning('请填写 API Key'); return; }
+    // Key 允许为空：Ollama 等本地服务无需 Key；云端缺 Key 会在调用时报错提示
     setSaving(true);
     try {
-      const s = await api.saveLlm({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), model: model.trim() });
+      const s = await api.saveLlm({
+        baseUrl: baseUrl.trim(),
+        apiKey: clearKey ? '' : apiKey.trim(),
+        model: model.trim(),
+        clearKey,
+      });
       setInfo(s);
       setApiKey('');
+      setClearKey(false);
       setLlmModal(false);
-      Message.success('已保存（Key 仅存 NAS，不回显）');
+      Message.success(clearKey ? '已保存并清除 Key（Ollama 等本地服务无需 Key）' : '已保存（Key 仅存 NAS，不回显）');
       api.aiUsage().then((d) => setUsage(d.usage)).catch(() => {});
     } catch (e) {
       Message.error((e as Error).message);
@@ -200,7 +207,11 @@ export default function Settings() {
               value={LLM_PRESETS.find((p) => p.base === baseUrl)?.label ?? undefined}
               onChange={(v) => {
                 const p = LLM_PRESETS.find((x) => x.label === v);
-                if (p) { setBaseUrl(p.base); setModel(p.model); }
+                if (!p) return;
+                setBaseUrl(p.base); setModel(p.model);
+                if (p.label.includes('Ollama')) {
+                  Message.info('Ollama 本地服务通常无需 Key；如之前保存过其他服务的 Key，建议点击「清除已保存 Key」，避免它随请求发送到 Ollama');
+                }
               }}
               options={LLM_PRESETS.map((p) => ({ label: p.label, value: p.label }))}
             />
@@ -215,10 +226,26 @@ export default function Settings() {
           </div>
           <div>
             <div className="mb-1 text-xs text-ink3">API Key（留空表示保留已保存的 Key）</div>
-            <Input.Password value={apiKey} onChange={setApiKey} placeholder={info?.llm_configured ? '已配置，留空不修改' : 'sk-…'} />
+            <div className="flex items-center gap-2">
+              <Input.Password
+                className="min-w-0 flex-1"
+                value={apiKey}
+                onChange={(v) => { setApiKey(v); if (clearKey) setClearKey(false); }}
+                placeholder={info?.llm_configured ? '已配置，留空不修改' : 'sk-…'}
+              />
+              {info?.llm_configured && (
+                <button
+                  onClick={() => { setClearKey(true); setApiKey(''); Message.info('已标记清除：保存后将彻底移除已保存的 Key（Ollama 等本地服务无需 Key）'); }}
+                  className="shrink-0 rounded-lg border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10"
+                >
+                  清除已保存 Key
+                </button>
+              )}
+            </div>
           </div>
           <p className="m-0 text-[11px] leading-4 text-ink3">
             解析建议用便宜模型（如 deepseek-chat / 豆包 lite）；讲解与解析共用同一配置。
+            Ollama 本地服务无需 Key；未填 Key 时不会发送任何鉴权头，云端服务缺 Key 会在调用时报错。
           </p>
         </div>
       </Modal>
