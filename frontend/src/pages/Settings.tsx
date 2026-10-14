@@ -2,12 +2,13 @@
  * Settings.tsx — 设置：主题三态、LLM 配置、AI 调用记录、隐私说明
  */
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Radio, Empty, Input, Message, Modal, Select } from '@arco-design/web-react';
 import { IconLock, IconRobot, IconGithub, IconSafe } from '@arco-design/web-react/icon';
 import { useTheme, type ThemeMode } from '../theme';
 import { api, type AiUsageItem, type SettingsInfo } from '../api';
 
-const KIND_LABEL: Record<string, string> = { explain: 'AI 讲解', parse: 'AI 解析' };
+const KIND_LABEL: Record<string, string> = { explain: 'AI 讲解', parse: 'AI 解析', 'format-suggest': 'AI 格式建议' };
 
 /** 常用 OpenAI 兼容接口预设（选择后自动填充地址与默认模型，均可再手动改） */
 const LLM_PRESETS: { label: string; base: string; model: string }[] = [
@@ -23,8 +24,10 @@ const LLM_PRESETS: { label: string; base: string; model: string }[] = [
 
 export default function Settings() {
   const { mode, setMode } = useTheme();
+  const navigate = useNavigate();
   const [info, setInfo] = useState<SettingsInfo | null>(null);
   const [usage, setUsage] = useState<AiUsageItem[]>([]);
+  const [usageTotal, setUsageTotal] = useState(0);
 
   // LLM 表单
   const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com/v1');
@@ -40,7 +43,7 @@ export default function Settings() {
       if (s.llm_base) setBaseUrl(s.llm_base);
       if (s.llm_model) setModel(s.llm_model);
     }).catch(() => {});
-    api.aiUsage().then((d) => setUsage(d.usage)).catch(() => {});
+    api.aiUsage().then((d) => { setUsage(d.usage); setUsageTotal(d.total); }).catch(() => {});
   };
   useEffect(load, []);
 
@@ -67,7 +70,7 @@ export default function Settings() {
       setClearKey(false);
       setLlmModal(false);
       Message.success(clearKey ? '已保存并清除 Key（Ollama 等本地服务无需 Key）' : '已保存（Key 仅存 NAS，不回显）');
-      api.aiUsage().then((d) => setUsage(d.usage)).catch(() => {});
+      api.aiUsage().then((d) => { setUsage(d.usage); setUsageTotal(d.total); }).catch(() => {});
     } catch (e) {
       Message.error((e as Error).message);
     } finally {
@@ -127,7 +130,17 @@ export default function Settings() {
         <div className="rounded-xl bg-canvas px-4 py-3 text-sm">
           <div className="flex items-center justify-between">
             <span className="text-ink2">AI 调用记录</span>
-            <span className="text-xs font-medium text-ink3">{usage.length} 次</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-ink3">{usageTotal} 次</span>
+              {usageTotal > usage.length && (
+                <button
+                  onClick={() => navigate('/usage')}
+                  className="rounded-md border border-primary/30 px-2 py-0.5 text-xs text-primary hover:bg-primary/10"
+                >
+                  查看全部
+                </button>
+              )}
+            </div>
           </div>
           {usage.length === 0 ? (
             <div className="py-2 text-xs text-ink3">暂无调用——AI 全部手动触发，这里只记录次数与字符量，不记录题目内容</div>
@@ -168,10 +181,10 @@ export default function Settings() {
         <div className="flex items-center gap-3">
           <IconGithub style={{ fontSize: 22 }} className="text-ink2" />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-ink">开源项目 · MIT 协议</div>
+            <div className="text-sm font-medium text-ink">开源项目 · AGPL-3.0</div>
             <div className="text-xs text-ink3">代码完全开源、零遥测、无广告，欢迎自行审计或贡献</div>
           </div>
-          <span className="shrink-0 rounded-lg bg-canvas px-3 py-1 text-xs text-ink3">AI刷题侠 v0.4.1</span>
+          <span className="shrink-0 rounded-lg bg-canvas px-3 py-1 text-xs text-ink3">爱刷题 v0.6.3</span>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-ink3">
           <div className="rounded-lg bg-canvas px-3 py-2">应用描述 · 隐私优先</div>

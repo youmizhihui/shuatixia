@@ -108,14 +108,14 @@ export default function Wrong() {
               </div>
               <p className="m-0 whitespace-pre-wrap text-[15px] leading-7 text-ink">{w.stem}</p>
               {w.options && w.options.length > 0 && (
-                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                <div className="flex flex-col gap-1.5">
                   {w.options.map((o) => {
                     const k = o.k.toUpperCase();
                     const isAns = w.type === 'multiple' ? w.answer.includes(k) : w.answer.toUpperCase() === k;
                     return (
-                      <div key={o.k} className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm ${isAns ? 'border-success bg-green-50 text-success dark:bg-green-900/30' : 'border-line text-ink2'}`}>
-                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ${isAns ? 'bg-success text-white' : 'bg-canvas text-ink3'}`}>{o.k}</span>
-                        <span className="truncate">{o.text}</span>
+                      <div key={o.k} className={`flex items-start gap-2 rounded-lg border px-3 py-1.5 text-sm ${isAns ? 'border-success bg-green-50 text-success dark:bg-green-900/30' : 'border-line text-ink2'}`}>
+                        <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ${isAns ? 'bg-success text-white' : 'bg-canvas text-ink3'}`}>{o.k}</span>
+                        <span className="min-w-0 flex-1 whitespace-pre-wrap">{o.text}</span>
                       </div>
                     );
                   })}

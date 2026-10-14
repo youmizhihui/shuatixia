@@ -77,7 +77,7 @@ async function upload(bankId, filename, buf, type) {
   // 1) health
   {
     const h = await json('GET', '/api/health');
-    assert.strictEqual(h.name, 'AI刷题侠');
+    assert.strictEqual(h.name, '爱刷题');
     pass++;
     console.log('[1] health OK');
   }

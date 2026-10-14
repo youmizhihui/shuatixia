@@ -46,6 +46,7 @@ function saveConfig({ baseUrl, apiKey, model, clearKey }) {
     apiKey: clearKey ? '' : String(apiKey || old.apiKey || '').trim(),
   };
   if (!next.baseUrl) throw new Error('API 地址不能为空');
+  if (!/^https?:\/\//i.test(next.baseUrl)) throw new Error('API 地址须以 http:// 或 https:// 开头');
   if (!next.model) throw new Error('模型名称不能为空');
   // Key 允许为空：本地服务（Ollama 等）无需 Key；云端缺 Key 会在调用时报错提示
   fs.mkdirSync(path.dirname(configFile), { recursive: true });

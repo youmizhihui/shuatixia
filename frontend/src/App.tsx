@@ -12,6 +12,7 @@ import Favorites from './pages/Favorites';
 import Stats from './pages/Stats';
 import Import from './pages/Import';
 import Settings from './pages/Settings';
+import Usage from './pages/Usage';
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/stats" element={<Stats />} />
         <Route path="/import" element={<Import />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/usage" element={<Usage />} />
       </Route>
     </Routes>
   );

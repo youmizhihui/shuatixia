@@ -31,6 +31,9 @@ export interface Bank {
   visibility: string;
   total_count: number;
   question_count: number;
+  single_count?: number;
+  multiple_count?: number;
+  judge_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -116,11 +119,19 @@ export interface SettingsInfo {
 
 export interface AiUsageItem {
   id: number;
-  kind: 'explain' | 'parse';
+  kind: 'explain' | 'parse' | 'format-suggest';
   model: string | null;
   questions: number;
   chars: number;
   created_at: string;
+}
+
+/** AI 调用记录分页结果 */
+export interface AiUsagePage {
+  usage: AiUsageItem[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 export interface PracticeQuestion {
@@ -183,11 +194,16 @@ export const api = {
   createBank: (name: string, category?: string) =>
     request<Bank>('POST', '/banks', { name, category }),
   bankDetail: (id: string) => request<Bank>('GET', `/banks/${id}`),
-  questions: (id: string, page = 1, size = 20) =>
-    request<{ total: number; page: number; size: number; questions: Question[] }>(
+  questions: (id: string, page = 1, size = 20, q?: string) => {
+    const qs = new URLSearchParams();
+    qs.set('page', String(page));
+    qs.set('size', String(size));
+    if (q) qs.set('q', q);
+    return request<{ total: number; page: number; size: number; questions: Question[] }>(
       'GET',
-      `/banks/${id}/questions?page=${page}&size=${size}`
-    ),
+      `/banks/${id}/questions?${qs.toString()}`
+    );
+  },
   importFile: (bankId: string, file: File) => {
     const fd = new FormData();
     fd.append('file', file);
@@ -212,14 +228,21 @@ export const api = {
     request<{ cached: boolean; text: string }>('POST', '/ai/explain', { question_id: questionId }),
   aiParse: (token: string) =>
     request<{ questions: Question[]; parsed: number; remaining_blocks: number }>('POST', '/ai/parse', { token }),
-  aiUsage: () => request<{ usage: AiUsageItem[] }>('GET', '/ai/usage'),
+  aiUsage: (params?: { page?: number; page_size?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.page_size) qs.set('page_size', String(params.page_size));
+    const q = qs.size ? `?${qs.toString()}` : '';
+    return request<AiUsagePage>('GET', '/ai/usage' + q);
+  },
   // 练习
   practice: (bankId: string) => request<PracticeState>('GET', `/banks/${bankId}/practice`),
   practiceAnswer: (bankId: string, questionId: string, answer: string) =>
     request<AnswerResult>('POST', `/banks/${bankId}/practice/answer`, { question_id: questionId, answer }),
   // 模拟卷
-  createPaper: (bankId: string, count: number, title?: string) =>
-    request<{ paper: Paper }>('POST', `/banks/${bankId}/papers`, { count, title }),
+  createPaper: (bankId: string, opts: { count?: number; single?: number; multiple?: number; title?: string }) =>
+    request<{ paper: Paper }>('POST', `/banks/${bankId}/papers`,
+      { count: opts.count, single_count: opts.single, multiple_count: opts.multiple, title: opts.title }),
   papers: () => request<{ papers: Paper[] }>('GET', '/papers'),
   paper: (id: string) => request<{ paper: Paper }>('GET', `/papers/${id}`),
   submitPaper: (id: string, answers: Record<string, string>) =>

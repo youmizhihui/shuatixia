@@ -67,10 +67,10 @@ const QuestionCard = memo(function QuestionCard({
         onChange={(v) => onPatch(idx, { stem: v })}
       />
       {q.options && q.options.length > 0 && (
-        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+        <div className="flex flex-col gap-1.5">
           {q.options.map((o, oi) => (
             <div key={oi} className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-ink3 w-4">{o.k}</span>
+              <span className="text-xs font-semibold text-ink3 w-4 shrink-0">{o.k}</span>
               <Input size="small" value={o.text} placeholder={`选项 ${o.k}`}
                 onChange={(v) => onPatch(idx, { options: q.options!.map((x, xi) => (xi === oi ? { ...x, text: v } : x)) })} />
             </div>

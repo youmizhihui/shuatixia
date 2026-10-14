@@ -1,11 +1,13 @@
 appname=shuatixia
-version=0.4.2
-display_name=AI刷题侠
-desc=家庭刷题应用：导入 PDF/Word/Excel 题库，顺序练习、模拟考试、错题集、收藏与学习统计。AI 可选：题目识别与逐题讲解，全部手动触发，题目与 Key 仅存本地 NAS，隐私可控。
+version=0.6.3
+display_name=爱刷题
+desc=私人刷题库：导入 TXT / Excel / Word / PDF 题库，自动识别排版，规则 + AI 双通道解析。<br>顺序练习、模拟考试、错题集、收藏与学习统计，数据 100% 留在本机、离线可用。<br>AI 讲解可选：全部手动触发，Key 仅存 NAS，题目不出本机。<br>零遥测 · 无广告
 source=thirdparty
 platform=all
 maintainer=有米智汇
+maintainer_url="https://github.com/youmizhihui/shuatixia"
 distributor=有米智汇
+distributor_url="https://github.com/youmizhihui/shuatixia"
 os_min_version=1.2.0401
 desktop_uidir=ui
 desktop_applaunchname=shuatixia.main

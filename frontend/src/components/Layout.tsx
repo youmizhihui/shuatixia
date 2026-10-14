@@ -64,7 +64,7 @@ function Logo() {
         100
       </div>
       <div>
-        <div className="text-[15px] font-semibold leading-tight text-ink">AI刷题侠</div>
+        <div className="text-[15px] font-semibold leading-tight text-ink">爱刷题</div>
         <div className="text-[11px] text-ink3 leading-tight">练一题 · 进一步</div>
       </div>
     </div>

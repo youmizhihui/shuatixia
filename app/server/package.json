@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "mammoth": "^1.9.0",
-    "pdf-parse": "^1.1.1",
-    "xlsx": "^0.18.5"
+    "pdfjs-dist": "file:../../vendor/pdfjs-dist-6.3.289.tgz",
+    "xlsx": "file:../../vendor/xlsx-0.19.3.tgz"
   }
 }

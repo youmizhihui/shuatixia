@@ -43,3 +43,7 @@ Thumbs.db
 
 # ===== 编辑器 =====
 .vscode/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * server.js — AI刷题侠后端
+ * server.js — 爱刷题后端
  * 纯 Node 内置模块（node:http / node:sqlite），解析库仅 xlsx / mammoth / pdf-parse（纯 JS，无原生编译）。
  *
  * 运行模式：
@@ -13,6 +13,7 @@
 const http = require('node:http');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const { initDb, getDb, genId, nowLocal, migrate } = require('./db');
 const { parseFile, summarize } = require('./import/worker');
 const spec = require('./import/spec');
@@ -198,10 +199,11 @@ function canManageBank(db, bankId, uid) {
 }
 
 /** 从 importCache 取结果并做过期清理 */
-function getImport(token) {
+function getImport(token, uid) {
   const hit = importCache.get(token);
   if (!hit) return null;
   if (Date.now() - hit.ts > IMPORT_TTL) { importCache.delete(token); return null; }
+  if (uid && hit.uid !== uid) return null; // 导入预览仅属主可读
   return hit;
 }
 
@@ -211,7 +213,10 @@ function bankDetail(bankId) {
   const bank = db.prepare('SELECT * FROM question_banks WHERE id=?').get(bankId);
   if (!bank) return null;
   const cnt = db.prepare('SELECT COUNT(*) c FROM questions WHERE bank_id=?').get(bankId).c;
-  return { ...bank, question_count: cnt };
+  const byType = db.prepare('SELECT type, COUNT(*) c FROM questions WHERE bank_id=? GROUP BY type').all(bankId);
+  const tc = { single: 0, multiple: 0, judge: 0, unknown: 0 };
+  for (const t of byType) if (tc[t.type] !== undefined) tc[t.type] = t.c;
+  return { ...bank, question_count: cnt, single_count: tc.single, multiple_count: tc.multiple, judge_count: tc.judge };
 }
 
 function listBanks(uid) {
@@ -269,7 +274,7 @@ function createRouter() {
   const router = {};
 
   // ---- 系统 ----
-  router['GET /api/health'] = () => ({ ok: true, name: 'AI刷题侠', version: '0.2.0' });
+  router['GET /api/health'] = () => ({ ok: true, name: '爱刷题', version: '0.6.3' });
 
   // ---- 题库 ----
   router['GET /api/banks'] = async (body, params, req) => {
@@ -315,11 +320,19 @@ function createRouter() {
     const perm = canReadBank(db, params.id, u.uid);
     if (perm === null) throw httpError(404, '题库不存在');
     if (perm === false) throw httpError(403, '无权访问该题库');
-    const total = db.prepare('SELECT COUNT(*) c FROM questions WHERE bank_id=?').get(params.id).c;
+    const kw = (q.get('q') || '').trim();
+    let where = 'WHERE bank_id=?';
+    const args = [params.id];
+    if (kw) {
+      const like = '%' + kw + '%';
+      where += ' AND (stem LIKE ? OR options LIKE ? OR chapter LIKE ?)';
+      args.push(like, like, like);
+    }
+    const total = db.prepare('SELECT COUNT(*) c FROM questions ' + where).get(...args).c;
     const rows = db.prepare(
       'SELECT id, seq, type, stem, options, answer, explanation, chapter, confidence FROM questions ' +
-      'WHERE bank_id=? ORDER BY seq LIMIT ? OFFSET ?'
-    ).all(params.id, size, (page - 1) * size);
+      where + ' ORDER BY seq LIMIT ? OFFSET ?'
+    ).all(...args, size, (page - 1) * size);
     const questions = rows.map((r) => ({
       ...r,
       options: r.options ? JSON.parse(r.options) : null,
@@ -390,7 +403,7 @@ function createRouter() {
     importCache.set(token, {
       bankId: params.id, result, fingerprint, ts: Date.now(),
       buffer: file.body, format: result.format,
-      specSignature, specKind,
+      specSignature, specKind, uid: u.uid,
     });
     return {
       token, summary: result.summary || null, format: result.format, name: file.filename,
@@ -404,7 +417,7 @@ function createRouter() {
   router['POST /api/imports/:token/format-hint'] = async (body, params, req) => {
     const u = getUser(req);
     if (!u) throw httpError(401, '未登录，请先登录飞牛');
-    const hit = getImport(params.token);
+    const hit = getImport(params.token, u.uid);
     if (!hit) throw httpError(404, '导入预览已过期，请重新上传');
     const cfg = ai.getConfig();
     if (!cfg) throw httpError(400, '尚未配置 AI 模型，请先在设置页填写 API 地址与 Key');
@@ -433,7 +446,7 @@ function createRouter() {
   router['POST /api/imports/:token/apply-format'] = async (body, params, req) => {
     const u = getUser(req);
     if (!u) throw httpError(401, '未登录，请先登录飞牛');
-    const hit = getImport(params.token);
+    const hit = getImport(params.token, u.uid);
     if (!hit) throw httpError(404, '导入预览已过期，请重新上传');
     const sp = body && body.spec;
     if (!sp || typeof sp !== 'object' || !sp.kind) throw httpError(400, '缺少格式规范');
@@ -482,8 +495,10 @@ function createRouter() {
     return rest;
   };
 
-  router['GET /api/imports/:token'] = async (body, params) => {
-    const hit = getImport(params.token);
+  router['GET /api/imports/:token'] = async (body, params, req) => {
+    const u = getUser(req);
+    if (!u) throw httpError(401, '未登录，请先登录飞牛');
+    const hit = getImport(params.token, u.uid);
     if (!hit) throw httpError(404, '导入预览已过期，请重新上传');
     const { text, ...rest } = hit.result;
     return rest;
@@ -492,7 +507,7 @@ function createRouter() {
   router['POST /api/imports/:token/commit'] = async (body, params, req) => {
     const u = getUser(req);
     if (!u) throw httpError(401, '未登录，请先登录飞牛');
-    const hit = getImport(params.token);
+    const hit = getImport(params.token, u.uid);
     if (!hit) throw httpError(404, '导入预览已过期，请重新上传');
     const db = getDb();
     const perm = canManageBank(db, hit.bankId, u.uid);
@@ -550,8 +565,12 @@ function createRouter() {
     const u = getUser(req);
     if (!u) throw httpError(401, '未登录，请先登录飞牛');
     const db = getDb();
-    const rows = db.prepare('SELECT id, kind, model, questions, chars, created_at FROM ai_usage WHERE user_id=? ORDER BY id DESC LIMIT 50').all(u.uid);
-    return { usage: rows };
+    const q = new URL(req.url, 'http://x').searchParams;
+    const page = Math.max(1, parseInt(q.get('page') || '1', 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(q.get('page_size') || '5', 10) || 5));
+    const total = db.prepare('SELECT COUNT(*) c FROM ai_usage WHERE user_id=?').get(u.uid).c;
+    const rows = db.prepare('SELECT id, kind, model, questions, chars, created_at FROM ai_usage WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?').all(u.uid, pageSize, (page - 1) * pageSize);
+    return { usage: rows, total, page, page_size: pageSize };
   };
 
   // ---- AI：讲解（按需 + 缓存）----
@@ -751,14 +770,29 @@ function createRouter() {
     const bank = canReadBank(db, params.id, u.uid);
     if (bank === null) throw httpError(404, '题库不存在');
     if (bank === false) throw httpError(403, '无权访问该题库');
-    const count = Math.min(bank.total_count, Math.max(1, parseInt((body && body.count) || '20', 10) || 20));
-    const rows = db.prepare('SELECT id FROM questions WHERE bank_id=? ORDER BY RANDOM() LIMIT ?').all(params.id, count);
-    if (!rows.length) throw httpError(400, '题库还没有题目');
+    const cfg = (body && typeof body === 'object') ? body : {};
+    const hasTypeReq = 'single_count' in cfg || 'multiple_count' in cfg;
+    const singleN = Math.max(0, parseInt(cfg.single_count, 10) || 0);
+    const multipleN = Math.max(0, parseInt(cfg.multiple_count, 10) || 0);
+    const okSql = "(type='judge' OR (options IS NOT NULL AND options != ''))";
+    const pickSql = 'SELECT id FROM questions WHERE bank_id=? AND type=? AND (options IS NOT NULL AND options != \'\') ORDER BY RANDOM() LIMIT ?';
+    const anySql = 'SELECT id FROM questions WHERE bank_id=? AND ' + okSql + ' ORDER BY RANDOM() LIMIT ?';
+    let rows = [];
+    if (hasTypeReq) {
+      if (singleN) rows.push(...db.prepare(pickSql).all(params.id, 'single', singleN));
+      if (multipleN) rows.push(...db.prepare(pickSql).all(params.id, 'multiple', multipleN));
+      if (!rows.length) throw httpError(400, '所选题型暂无可用题目');
+    } else {
+      const count = Math.min(bank.total_count, Math.max(1, parseInt(cfg.count, 10) || 20));
+      rows = db.prepare(anySql).all(params.id, count);
+      if (!rows.length) throw httpError(400, '题库还没有可组卷的题目');
+    }
     const now = nowLocal();
     const pid = genId('pp');
-    const title = String((body && body.title) || '').trim() || `模拟卷 ${rows.length} 题`;
+    const title = String(cfg.title || '').trim() || `模拟卷 ${rows.length} 题`;
+    const seed = crypto.randomBytes(8).toString('hex');
     db.prepare('INSERT INTO papers (id, user_id, bank_id, title, config, question_ids, status, total, started_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(pid, u.uid, params.id, title, JSON.stringify({ count: rows.length }), JSON.stringify(rows.map((r) => r.id)), 'in_progress', rows.length, now);
+      .run(pid, u.uid, params.id, title, JSON.stringify({ count: rows.length, single: singleN, multiple: multipleN, seed }), JSON.stringify(rows.map((r) => r.id)), 'in_progress', rows.length, now);
     return { paper: paperDetail(pid) };
   };
 
@@ -791,6 +825,9 @@ function createRouter() {
     if (paper.status === 'submitted') throw httpError(400, '试卷已交卷');
     const answers = (body && body.answers) || {};
     const ids = JSON.parse(paper.question_ids);
+    let pcfg = {};
+    try { pcfg = JSON.parse(paper.config || '{}'); } catch (e) { /* 旧数据无 config */ }
+    const seed = pcfg.seed || '';
     const now = nowLocal();
     const ins = db.prepare('INSERT INTO answer_records (id, user_id, bank_id, question_id, source, paper_id, user_answer, is_correct, answered_at) VALUES (?,?,?,?,?,?,?,?,?)');
     const results = [];
@@ -800,8 +837,10 @@ function createRouter() {
     try {
       for (const qid of ids) {
         const q = db.prepare('SELECT * FROM questions WHERE id=?').get(qid);
+        if (!q) { results.push({ question_id: qid, seq: null, correct: null, user_answer: '', answer: '' }); continue; }
+        const sq = shuffledQuestion({ ...q, options: q.options ? JSON.parse(q.options) : null }, seed);
         const ua = answers[qid] !== undefined && answers[qid] !== null ? String(answers[qid]).trim() : '';
-        const correct = judge.isCorrect(q, ua);
+        const correct = judge.isCorrect(sq, ua);
         if (correct === true) score++;
         if (correct === false) {
           db.prepare('INSERT INTO wrong_questions (user_id, bank_id, question_id, wrong_count, last_wrong_at, status) VALUES (?,?,?,1,?,1) ' +
@@ -809,7 +848,7 @@ function createRouter() {
             .run(u.uid, paper.bank_id, qid, now);
         }
         ins.run(genId('ar'), u.uid, paper.bank_id, qid, 'paper', params.id, ua || null, correct === null ? 0 : (correct ? 1 : 0), now);
-        results.push({ question_id: qid, seq: q.seq, correct, user_answer: ua, answer: q.answer });
+        results.push({ question_id: qid, seq: sq.seq, correct, user_answer: ua, answer: sq.answer });
       }
       db.prepare('UPDATE papers SET status=\'submitted\', score=?, submitted_at=? WHERE id=?').run(score, now, params.id);
       db.prepare('COMMIT').run();
@@ -844,6 +883,43 @@ function createRouter() {
   return router;
 }
 
+/** 确定性随机（FNV-1a 初始化 + xorshift32），同 seed 同序列 */
+function seededRand(seedStr) {
+  let h = 2166136261 >>> 0;
+  const str = String(seedStr || '');
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return function () {
+    h ^= h << 13; h >>>= 0;
+    h ^= h >>> 17; h >>>= 0;
+    h ^= h << 5; h >>>= 0;
+    return h / 4294967296;
+  };
+}
+
+/** 按 seed 打乱选择题选项并重算答案字母；判断题/无选项题原样返回 */
+function shuffledQuestion(q, seed) {
+  if (q.type === 'judge' || !q.options || q.options.length === 0) return q;
+  const opts = q.options;
+  const rand = seededRand(String(seed || '') + ':' + q.id);
+  const arr = opts.map((o, i) => ({ o, origIdx: i }));
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+  const newOpts = arr.map((x, i) => ({ k: String.fromCharCode(65 + i), text: x.o.text }));
+  const origAns = String(q.answer || '').toUpperCase().replace(/[\s,，、.;；]+/g, '');
+  const newAnswer = [...origAns].map((ch) => {
+    const origIdx = opts.findIndex((o) => String(o.k).toUpperCase() === ch);
+    if (origIdx < 0) return ch;
+    const newIdx = arr.findIndex((x) => x.origIdx === origIdx);
+    return String.fromCharCode(65 + newIdx);
+  }).join('');
+  return { ...q, options: newOpts, answer: newAnswer };
+}
+
 /** 试卷详情（含题目；已交卷回看带用户答案） */
 function paperDetail(pid) {
   const db = getDb();
@@ -853,7 +929,10 @@ function paperDetail(pid) {
   const ph = ids.map(() => '?').join(',');
   const rows = db.prepare(`SELECT id, seq, type, stem, options, answer, explanation FROM questions WHERE id IN (${ph})`).all(...ids);
   const byId = Object.fromEntries(rows.map((r) => [r.id, { ...r, options: r.options ? JSON.parse(r.options) : null }]));
-  const questions = ids.map((qid) => byId[qid]).filter(Boolean);
+  let pcfg = {};
+  try { pcfg = JSON.parse(paper.config || '{}'); } catch (e) { /* 旧数据无 config */ }
+  const seed = pcfg.seed || '';
+  const questions = ids.map((qid) => byId[qid]).filter(Boolean).map((q) => shuffledQuestion(q, seed));
   // 回看：已交卷带用户答案
   let userAnswers = {};
   if (paper.status === 'submitted') {
@@ -865,7 +944,8 @@ function paperDetail(pid) {
 function serveStatic(res, urlPath, accept) {
   let rel = urlPath === '/' ? '/index.html' : urlPath;
   const filePath = path.normalize(path.join(WWW_ROOT, rel));
-  if (!filePath.startsWith(WWW_ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
+  const wwwSep = WWW_ROOT + path.sep;
+  if (filePath !== WWW_ROOT && !filePath.startsWith(wwwSep)) { res.writeHead(403); res.end('forbidden'); return; }
   fs.stat(filePath, (err, st) => {
     if (err || !st.isFile()) {
       // SPA fallback：非 API 且接受 HTML → index.html

@@ -1,10 +1,10 @@
 /**
- * BankDetail.tsx — 题库详情：题目列表（分页）、类型标签、答案与解析、AI 讲解（按需+缓存）
+ * BankDetail.tsx — 题库详情：题目列表（分页+搜索）、类型标签、答案与解析、AI 讲解（按需+缓存）
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Spin, Empty, Button, Tooltip, Message, Modal } from '@arco-design/web-react';
-import { IconLeft, IconApps, IconRobot } from '@arco-design/web-react/icon';
+import { Spin, Empty, Button, Tooltip, Message, Modal, Input } from '@arco-design/web-react';
+import { IconLeft, IconApps, IconRobot, IconSearch } from '@arco-design/web-react/icon';
 import { api, type Bank, type Question } from '../api';
 
 const TYPE_META: Record<string, { label: string; cls: string }> = {
@@ -34,14 +34,17 @@ export default function BankDetail() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [more, setMore] = useState(false);
+  const [kw, setKw] = useState('');
+  const debRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [aiBox, setAiBox] = useState<AiBox | null>(null);
   const [noLlm, setNoLlm] = useState(false);
 
-  const load = useCallback(async (p: number, append: boolean) => {
+  const load = useCallback(async (p: number, append: boolean, searchKw?: string) => {
     if (!id) return;
     setLoading(true);
     try {
-      const [b, q] = await Promise.all([api.bankDetail(id), api.questions(id, p, 20)]);
+      const k = (searchKw ?? kw).trim();
+      const [b, q] = await Promise.all([api.bankDetail(id), api.questions(id, p, 20, k || undefined)]);
       setBank(b);
       setTotal(q.total);
       setQs(append ? (prev) => [...prev, ...q.questions] : q.questions);
@@ -51,9 +54,18 @@ export default function BankDetail() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, kw]);
 
   useEffect(() => { load(1, false); }, [load]);
+
+  // 卸载时清理搜索防抖定时器
+  useEffect(() => () => { if (debRef.current) clearTimeout(debRef.current); }, []);
+
+  const onKwChange = (v: string) => {
+    setKw(v);
+    if (debRef.current) clearTimeout(debRef.current);
+    debRef.current = setTimeout(() => load(1, false, v.trim()), 400);
+  };
 
   const explain = async (q: Question) => {
     setAiBox({ qid: q.id, loading: true, cached: false, text: '' });
@@ -117,12 +129,27 @@ export default function BankDetail() {
         </button>
       </div>
 
+      {/* 搜索 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          allowClear
+          prefix={<IconSearch />}
+          placeholder="搜索题干、选项或章节…"
+          value={kw}
+          onChange={onKwChange}
+          style={{ maxWidth: 340 }}
+        />
+        {kw.trim() && (
+          <span className="text-xs text-ink3">“{kw.trim()}” 命中 {total} 题</span>
+        )}
+      </div>
+
       {/* 题目列表 */}
       {loading && qs.length === 0 ? (
         <div className="flex justify-center py-20"><Spin size={30} /></div>
       ) : qs.length === 0 ? (
         <div className="card-note py-16">
-          <Empty description="题库还没有题目，点击右上角导入" />
+          <Empty description={kw.trim() ? `未找到与“${kw.trim()}”相关的题目` : '题库还没有题目，点击右上角导入'} />
         </div>
       ) : (
         <div className="flex flex-col gap-4">
@@ -147,21 +174,21 @@ export default function BankDetail() {
                 <p className="m-0 whitespace-pre-wrap text-[15px] leading-7 text-ink">{q.stem}</p>
 
                 {q.options && q.options.length > 0 && (
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="flex flex-col gap-2">
                     {q.options.map((o) => {
                       const key = o.k.toUpperCase();
                       const isAns = q.type === 'multiple' ? q.answer.includes(key) : q.answer.toUpperCase() === key;
                       return (
                         <div
                           key={o.k}
-                          className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                          className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
                             isAns ? 'border-primary bg-primary-light text-primary' : 'border-line text-ink2'
                           }`}
                         >
-                          <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ${isAns ? 'bg-primary text-white' : 'bg-canvas text-ink3'}`}>
+                          <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ${isAns ? 'bg-primary text-white' : 'bg-canvas text-ink3'}`}>
                             {o.k}
                           </span>
-                          <span className="truncate">{o.text}</span>
+                          <span className="min-w-0 flex-1 whitespace-pre-wrap">{o.text}</span>
                         </div>
                       );
                     })}

@@ -1,11 +1,12 @@
 'use strict';
 /**
- * db.js — AI刷题侠 SQLite 数据层
+ * db.js — 爱刷题 SQLite 数据层
  * 使用 Node 内置 node:sqlite（DatabaseSync），零 npm 依赖。
  * 表结构对应方案设计 v2.0 第 6 章。
  */
 
 const { DatabaseSync } = require('node:sqlite');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -13,7 +14,7 @@ let db = null;
 
 /** 生成 id：前缀 + 时间戳 + 随机串（司农同款） */
 function genId(prefix) {
-  return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  return prefix + '_' + crypto.randomBytes(9).toString('hex');
 }
 
 const SCHEMA = `

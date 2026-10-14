@@ -164,6 +164,7 @@ export default function Home() {
         cancelText="取消"
         confirmLoading={saving}
         autoFocus={false}
+        style={{ width: 'min(92vw, 520px)' }}
       >
         <div className="flex flex-col gap-3 pt-1">
           <Input

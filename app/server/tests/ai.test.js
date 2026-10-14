@@ -114,8 +114,8 @@ async function run() {
   assert.strictEqual(ai.getConfig(), null);
 
   // 8) looseParse 宽松解析
-  assert.deepStrictEqual(ai.looseParse('前言 ```json\n{"questions":[]}\n``` 后'), []);
-  assert.deepStrictEqual(ai.looseParse('```json\n{"questions":[{"stem":"x"}]}\n```'), [{ stem: 'x' }]);
+  assert.deepStrictEqual(ai.looseParse('前言 ```json\n{"questions":[]}\n``` 后'), { questions: [] });
+  assert.deepStrictEqual(ai.looseParse('```json\n{"questions":[{"stem":"x"}]}\n```'), { questions: [{ stem: 'x' }] });
   assert.strictEqual(ai.looseParse('完全不是 JSON'), null);
 
   fs.rmSync(tmp, { recursive: true, force: true });

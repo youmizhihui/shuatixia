@@ -3,7 +3,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Spin, Message, Modal, Radio } from '@arco-design/web-react';
+import { Spin, Message, Modal, InputNumber } from '@arco-design/web-react';
 import { IconLeft, IconRobot, IconCheckCircle, IconExclamationCircle } from '@arco-design/web-react/icon';
 import { api, type Bank, type Paper } from '../api';
 
@@ -28,7 +28,8 @@ export default function PaperView() {
   const [noLlm, setNoLlm] = useState(false);
   // 组卷模式
   const [bank, setBank] = useState<Bank | null>(null);
-  const [paperCount, setPaperCount] = useState(20);
+  const [singleCount, setSingleCount] = useState(0);
+  const [multipleCount, setMultipleCount] = useState(0);
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
@@ -53,7 +54,8 @@ export default function PaperView() {
     if (newBank && (!id || id === 'new')) {
       api.bankDetail(newBank).then((b) => {
         setBank(b);
-        setPaperCount(Math.min(20, b.question_count || 20));
+        setSingleCount(Math.min(10, b.single_count ?? b.question_count ?? 0));
+        setMultipleCount(Math.min(5, b.multiple_count ?? 0));
       }).catch(() => {});
       setLoading(false);
     }
@@ -63,7 +65,7 @@ export default function PaperView() {
     if (!newBank) return;
     setCreating(true);
     try {
-      const r = await api.createPaper(newBank, paperCount);
+      const r = await api.createPaper(newBank, { single: singleCount, multiple: multipleCount });
       nav(`/paper/${r.paper.id}`, { replace: true });
     } catch (e) {
       Message.error((e as Error).message);
@@ -164,28 +166,41 @@ export default function PaperView() {
         </div>
 
         <div className="card-note flex flex-col gap-5 p-6">
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-medium text-ink">抽题数量</div>
-            <Radio.Group
-              type="button"
-              value={paperCount}
-              onChange={(v) => setPaperCount(Number(v))}
-              options={[
-                { label: '10 题', value: 10 },
-                { label: '20 题', value: 20 },
-                { label: '30 题', value: 30 },
-                { label: '50 题', value: 50 },
-                { label: `全部（${max}）`, value: max },
-              ].filter((o) => o.value <= max || o.value === max)}
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-medium text-ink">单选题数量</div>
+              <div className="text-xs text-ink3">题库共 {bank?.single_count ?? 0} 道单选</div>
+            </div>
+            <InputNumber
+              min={0}
+              max={bank?.single_count ?? 0}
+              value={singleCount}
+              onChange={(v) => setSingleCount(Number(v) || 0)}
+              style={{ width: '100%' }}
+              placeholder="0 表示不抽单选"
             />
-            <p className="m-0 text-xs text-ink3">从题库随机抽取，题型与知识点按题库实际分布。交卷后自动判分并归集错题。</p>
           </div>
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-medium text-ink">多选题数量</div>
+              <div className="text-xs text-ink3">题库共 {bank?.multiple_count ?? 0} 道多选</div>
+            </div>
+            <InputNumber
+              min={0}
+              max={bank?.multiple_count ?? 0}
+              value={multipleCount}
+              onChange={(v) => setMultipleCount(Number(v) || 0)}
+              style={{ width: '100%' }}
+              placeholder="0 表示不抽多选"
+            />
+          </div>
+          <p className="m-0 text-xs text-ink3">按所选题型与数量随机抽题，选项顺序会随机打乱。交卷后自动判分并归集错题。</p>
           <button
             onClick={createPaper}
-            disabled={creating || max === 0}
+            disabled={creating || (singleCount + multipleCount) === 0}
             className="rounded-xl bg-primary py-3 text-sm font-medium text-white shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40"
           >
-            {creating ? '组卷中…' : `开始答题（${paperCount} 题）`}
+            {creating ? '组卷中…' : `开始答题（${singleCount + multipleCount} 题）`}
           </button>
         </div>
       </div>
@@ -231,21 +246,21 @@ export default function PaperView() {
                 </div>
                 <p className="m-0 whitespace-pre-wrap text-[15px] leading-7 text-ink">{qq.stem}</p>
                 {opts.length > 0 && (
-                  <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1.5">
                     {opts.map((o) => {
                       const k = o.k.toUpperCase();
                       const isAns = qq.type === 'multiple' ? qq.answer.includes(k) : qq.answer.toUpperCase() === k;
                       const isPicked = (ua?.user_answer || '').includes(k);
                       return (
-                        <div key={o.k} className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm ${
+                        <div key={o.k} className={`flex items-start gap-2 rounded-lg border px-3 py-1.5 text-sm ${
                           isAns ? 'border-success bg-green-50 text-success dark:bg-green-900/30'
                           : isPicked ? 'border-danger bg-red-50 text-danger dark:bg-red-900/30'
                           : 'border-line text-ink2'
                         }`}>
-                          <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-semibold ${
+                          <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-semibold ${
                             isAns ? 'bg-success text-white' : isPicked ? 'bg-danger text-white' : 'bg-canvas text-ink3'
                           }`}>{o.k}</span>
-                          <span className="truncate">{o.text}</span>
+                          <span className="min-w-0 flex-1 whitespace-pre-wrap">{o.text}</span>
                         </div>
                       );
                     })}
@@ -289,7 +304,7 @@ export default function PaperView() {
             <div className="text-[11px] text-ink3">{bankName || '模拟卷'} · 已答 {answeredCount} / {questions.length}</div>
           </div>
         </div>
-        <button onClick={() => setSubmitModal(true)} disabled={answeredCount === 0}
+        <button onClick={() => setSubmitModal(true)} disabled={questions.length === 0}
           className="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40">
           交卷
         </button>
@@ -322,18 +337,22 @@ export default function PaperView() {
                 </button>
               ))}
             </div>
+          ) : !q.options || q.options.length === 0 ? (
+            <div className="rounded-xl border border-line bg-canvas px-4 py-3 text-sm text-ink3">
+              该题缺少选项，无法作答，请点击「下一题」跳过（未作答按 0 分计）。
+            </div>
           ) : (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {q.options?.map((o) => {
+            <div className="flex flex-col gap-2">
+              {q.options.map((o) => {
                 const k = o.k.toUpperCase();
                 const on = (answers[q.id] || []).includes(k);
                 return (
                   <button key={o.k} onClick={() => toggle(q.id, k)}
-                    className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-sm transition-colors ${
+                    className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-left text-sm transition-colors ${
                       on ? 'border-primary bg-primary-light text-primary' : 'border-line text-ink2 hover:border-primary/50'
                     }`}>
-                    <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ${on ? 'bg-primary text-white' : 'bg-canvas text-ink3'}`}>{o.k}</span>
-                    <span className="min-w-0 flex-1">{o.text}</span>
+                    <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ${on ? 'bg-primary text-white' : 'bg-canvas text-ink3'}`}>{o.k}</span>
+                    <span className="min-w-0 flex-1 whitespace-pre-wrap">{o.text}</span>
                   </button>
                 );
               })}
@@ -350,7 +369,7 @@ export default function PaperView() {
                 下一题
               </button>
             ) : (
-              <button onClick={() => setSubmitModal(true)} disabled={answeredCount === 0}
+              <button onClick={() => setSubmitModal(true)} disabled={questions.length === 0}
                 className="rounded-xl bg-success px-5 py-2.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40">
                 交卷
               </button>
